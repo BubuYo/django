@@ -129,7 +129,7 @@ class StateTests(SimpleTestCase):
             author_state.options,
             {"unique_together": {("name", "bio")}, "index_together": {("bio", "age")}, "indexes": []}
         )
-        self.assertEqual(author_state.bases, (models.Model, ))
+        self.assertEqual(author_state.bases, (models.Model,))
 
         self.assertEqual(book_state.app_label, "migrations")
         self.assertEqual(book_state.name, "Book")
@@ -141,18 +141,18 @@ class StateTests(SimpleTestCase):
             book_state.options,
             {"verbose_name": "tome", "db_table": "test_tome", "indexes": [book_index]},
         )
-        self.assertEqual(book_state.bases, (models.Model, ))
+        self.assertEqual(book_state.bases, (models.Model,))
 
         self.assertEqual(author_proxy_state.app_label, "migrations")
         self.assertEqual(author_proxy_state.name, "AuthorProxy")
         self.assertEqual(author_proxy_state.fields, [])
         self.assertEqual(author_proxy_state.options, {"proxy": True, "ordering": ["name"], "indexes": []})
-        self.assertEqual(author_proxy_state.bases, ("migrations.author", ))
+        self.assertEqual(author_proxy_state.bases, ("migrations.author",))
 
         self.assertEqual(sub_author_state.app_label, "migrations")
         self.assertEqual(sub_author_state.name, "SubAuthor")
         self.assertEqual(len(sub_author_state.fields), 2)
-        self.assertEqual(sub_author_state.bases, ("migrations.author", ))
+        self.assertEqual(sub_author_state.bases, ("migrations.author",))
 
         # The default manager is used in migrations
         self.assertEqual([name for name, mgr in food_state.managers], ['food_mgr'])
@@ -1003,8 +1003,54 @@ class ModelStateTests(SimpleTestCase):
         self.assertIs(author_state.fields[2][1].null, False)
         self.assertIs(author_state.fields[3][1].null, True)
         self.assertEqual(author_state.options, {'swappable': 'TEST_SWAPPABLE_MODEL', 'indexes': []})
-        self.assertEqual(author_state.bases, (models.Model, ))
+        self.assertEqual(author_state.bases, (models.Model,))
         self.assertEqual(author_state.managers, [])
+
+    @override_settings(TEST_SWAPPABLE_MODEL='migrations.SomeFakeModel')
+    def test_create_swappable_from_abstract(self):
+        """
+        A swappable model inheriting from a hierarchy:
+        concrete -> abstract -> concrete.
+        """
+        new_apps = Apps(['migrations'])
+
+        class SearchableLocation(models.Model):
+            keywords = models.CharField(max_length=256)
+
+            class Meta:
+                app_label = 'migrations'
+                apps = new_apps
+
+        class Station(SearchableLocation):
+            name = models.CharField(max_length=128)
+
+            class Meta:
+                abstract = True
+
+        class BusStation(Station):
+            bus_routes = models.CharField(max_length=128)
+            inbound = models.BooleanField(default=False)
+
+            class Meta(Station.Meta):
+                app_label = 'migrations'
+                apps = new_apps
+                swappable = 'TEST_SWAPPABLE_MODEL'
+
+        station_state = ModelState.from_model(BusStation)
+        self.assertEqual(station_state.app_label, 'migrations')
+        self.assertEqual(station_state.name, 'BusStation')
+        self.assertEqual(
+            [x for x, y in station_state.fields],
+            ['searchablelocation_ptr', 'name', 'bus_routes', 'inbound']
+        )
+        self.assertEqual(station_state.fields[1][1].max_length, 128)
+        self.assertEqual(station_state.fields[2][1].null, False)
+        self.assertEqual(
+            station_state.options,
+            {'abstract': False, 'swappable': 'TEST_SWAPPABLE_MODEL', 'indexes': []}
+        )
+        self.assertEqual(station_state.bases, ('migrations.searchablelocation',))
+        self.assertEqual(station_state.managers, [])
 
     @override_settings(TEST_SWAPPABLE_MODEL='migrations.SomeFakeModel')
     def test_custom_manager_swappable(self):
@@ -1043,6 +1089,46 @@ class ModelStateTests(SimpleTestCase):
         state = ModelState.from_model(PrivateFieldModel)
         self.assertNotIn('order_with_respect_to', state.options)
 
+    @isolate_apps('migrations')
+    def test_abstract_model_children_inherit_indexes(self):
+        class Abstract(models.Model):
+            name = models.CharField(max_length=50)
+
+            class Meta:
+                app_label = 'migrations'
+                abstract = True
+                indexes = [models.indexes.Index(fields=['name'])]
+
+        class Child1(Abstract):
+            pass
+
+        class Child2(Abstract):
+            pass
+
+        child1_state = ModelState.from_model(Child1)
+        child2_state = ModelState.from_model(Child2)
+        index_names = [index.name for index in child1_state.options['indexes']]
+        self.assertEqual(index_names, ['migrations__name_b0afd7_idx'])
+        index_names = [index.name for index in child2_state.options['indexes']]
+        self.assertEqual(index_names, ['migrations__name_016466_idx'])
+
+        # Modifying the state doesn't modify the index on the model.
+        child1_state.options['indexes'][0].name = 'bar'
+        self.assertEqual(Child1._meta.indexes[0].name, 'migrations__name_b0afd7_idx')
+
+    @isolate_apps('migrations')
+    def test_explicit_index_name(self):
+        class TestModel(models.Model):
+            name = models.CharField(max_length=50)
+
+            class Meta:
+                app_label = 'migrations'
+                indexes = [models.indexes.Index(fields=['name'], name='foo_idx')]
+
+        model_state = ModelState.from_model(TestModel)
+        index_names = [index.name for index in model_state.options['indexes']]
+        self.assertEqual(index_names, ['foo_idx'])
+
 
 class RelatedModelsTests(SimpleTestCase):
 
@@ -1058,7 +1144,7 @@ class RelatedModelsTests(SimpleTestCase):
             'apps': self.apps,
             'proxy': proxy,
         }
-        meta = type("Meta", tuple(), meta_contents)
+        meta = type("Meta", (), meta_contents)
         if not bases:
             bases = (models.Model,)
         body = {
